@@ -163,6 +163,46 @@ module FortyFacets
       end
     end
 
+    class HasAndBelongsToManyFilter < AssociationFacetFilter
+      def build_scope
+        return Proc.new { |base| base } if empty?
+        Proc.new do |base|
+          base_table = definition.origin_class.table_name
+          join_name =  [definition.association.name.to_s, base_table.to_s].sort.join('_')
+
+          primary_key_column = "#{base_table}.#{definition.origin_class.primary_key}"
+          foreign_key_column = "#{definition.association.klass.name.downcase}_id"
+
+          subquery = base.joins(definition.joins).select(primary_key_column)
+            .where("#{join_name}.#{foreign_key_column}" => values).uniq
+
+          base.joins(definition.joins).where(primary_key_column => subquery.select(primary_key_column)).distinct
+        end
+      end
+
+      def facet
+        base_table = definition.search.root_class.table_name
+        join_name =  [definition.association.name.to_s, base_table.to_s].sort.join('_')
+        foreign_id_col = definition.association.name.to_s.singularize + '_id'
+        my_column = join_name + '.' + foreign_id_col
+        counts = without.result
+                  .reorder('')
+                  .joins(definition.joins)
+                  .select("#{my_column} as foreign_id, count(#{my_column}) as occurrences")
+                  .group(my_column)
+        counts.includes_values = []
+        entities_by_id = definition.association.klass.find(counts.map(&:foreign_id)).group_by(&:id)
+
+        facet = counts.map do |count|
+          facet_entity = entities_by_id[count.foreign_id].first
+          is_selected = selected.include?(facet_entity)
+          FacetValue.new(facet_entity, count.occurrences, is_selected)
+        end
+
+        order_facet!(facet)
+      end
+    end
+
     def build_filter(search_instance, param_value)
       if association
         if association.macro == :belongs_to
@@ -170,7 +210,7 @@ module FortyFacets
         elsif association.macro == :has_many
           HasManyFilter.new(self, search_instance, param_value)
         elsif association.macro == :has_and_belongs_to_many
-          HasManyFilter.new(self, search_instance, param_value)
+          HasAndBelongsToManyFilter.new(self, search_instance, param_value)
         else
           raise "Unsupported association type: #{association.macro}"
         end
